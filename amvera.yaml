@@ -1,5 +1,5 @@
 meta:
-  environment: python
+  environment: python # <-- Вот это нужно, чтобы Amvera знала, что у нас Python
   version: 3.11
   commands:
     build: pip install -r requirements.txt

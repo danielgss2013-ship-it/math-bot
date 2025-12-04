@@ -1,6 +1,0 @@
-meta:
-  environment: python
-  version: 3.11
-  commands:
-    build: pip install -r requirements.txt
-    start: python main.py

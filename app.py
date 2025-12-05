@@ -39,7 +39,6 @@ async def cmd_buy(message: Message):
         # Цена пишется в КОПЕЙКАХ! 1500 рублей = 150000 копеек
         prices=[LabeledPrice(label="Подписка на месяц", amount=150000)], 
         start_parameter="create_invoice",
-        payload="test-invoice-payload"
     )
 
 # 3. Техническая проверка перед оплатой (Telegram требует ответить "ОК")
@@ -74,4 +73,5 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
+
     asyncio.run(main())

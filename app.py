@@ -2,7 +2,8 @@ import os
 import sqlite3
 import datetime
 import asyncio
-from aiogram import Bot, Dispatcher, executor
+from aiogram import Bot, Dispatcher # Bot, Dispatcher импортируем прямо из aiogram
+from aiogram.utils import executor # А executor импортируем из aiogram.utils, чтобы не было ошибки!
 from aiogram.types import Message, LabeledPrice, ContentType, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
 from aiogram.dispatcher.filters import Command
 from aiogram.dispatcher import FSMContext
@@ -10,15 +11,15 @@ from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# --- 1. КОНФИГУРАЦИЯ И ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ---
-# Секретные токены берутся из настроек Amvera (Environment Variables)
+# --- 1. КОНФИГУРАЦИЯ И ПЕРЕМЕННЫЕ (Хардкод по вашим данным) ---
+# Секретные токены берутся из настроек Amvera
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 PAYMENT_TOKEN = os.getenv("PAYMENT_TOKEN")
 
-# Константы, вписанные по вашим данным:
+# Ваши данные
 CHANNEL_ID = -1003328408384
 ADMIN_ID = 405491563
-OFFER_FILENAME = 'oferta.pdf' # Имя файла оферты, как вы указали
+OFFER_FILENAME = 'oferta.pdf' 
 DB_PATH = '/data/subscriptions.db'
 
 # --- FSM: СОСТОЯНИЯ ДЛЯ СБОРА ДАННЫХ ---
@@ -30,6 +31,7 @@ class PaymentStates(StatesGroup):
 # --- 2. ФУНКЦИИ БАЗЫ ДАННЫХ ---
 
 def init_db():
+    """Создает таблицу подписок при запуске."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""
@@ -44,6 +46,7 @@ def init_db():
     conn.close()
 
 def add_subscription(user_id, username, email):
+    """Добавляет или продлевает подписку на 30 дней."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     expire_date = (datetime.datetime.now() + datetime.timedelta(days=30)).strftime('%Y-%m-%d')
@@ -60,6 +63,7 @@ def add_subscription(user_id, username, email):
     return expire_date
 
 def get_subscription_status(user_id):
+    """Проверяет статус подписки."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT expire_date FROM subscriptions WHERE user_id = ?", (user_id,))
@@ -80,6 +84,7 @@ def get_subscription_status(user_id):
 # --- 3. ФОНОВАЯ ФУНКЦИЯ ПРОВЕРКИ ИСТЕЧЕНИЯ ---
 
 async def check_expirations(bot: Bot):
+    """Проверяет базу данных и удаляет истекшие подписки."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     today_str = datetime.datetime.now().strftime('%Y-%m-%d')
@@ -89,7 +94,7 @@ async def check_expirations(bot: Bot):
 
     for user_id, username in expired_users:
         try:
-            # 1. Отзываем доступ из канала (бан, который можно снять, если пользователь продлит подписку)
+            # 1. Отзываем доступ из канала
             await bot.ban_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
             
             # 2. Уведомляем пользователя
@@ -105,6 +110,7 @@ async def check_expirations(bot: Bot):
     conn.close()
 
 # --- 4. ИНИЦИАЛИЗАЦИЯ AIOGRAM ---
+# MemoryStorage нужен для FSM
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 scheduler = AsyncIOScheduler()
@@ -168,11 +174,11 @@ async def process_email(message: Message, state: FSMContext):
         parse_mode="Markdown"
     )
     
-    # Отправка файла PDF из той же папки (GitHub)
+    # Отправка файла PDF (OFFER_FILENAME = 'oferta.pdf')
     try:
        await bot.send_document(message.chat.id, InputFile(OFFER_FILENAME), reply_markup=agreement_keyboard)
     except Exception:
-       # Если файл не найден, отправляем ссылку (здесь можно поставить ссылку на внешний ресурс)
+       # Если файл не найден (например, не загружен на GitHub), отправляем просто кнопку
        await message.answer(f"Ошибка при отправке файла оферты. Пожалуйста, подтвердите согласие ниже:", reply_markup=agreement_keyboard)
 
 
@@ -209,8 +215,8 @@ async def successful_payment(message: Message, state: FSMContext):
     user_id = message.from_user.id
     username = message.from_user.username or 'N/A'
     
+    # Получаем Email, который пользователь вводил ранее
     user_data = await state.get_data()
-    # Берем email из FSM или ставим заглушку
     user_email = user_data.get('user_email', 'Email not collected') 
 
     # 1. Добавляем/продлеваем подписку в БД

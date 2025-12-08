@@ -22,7 +22,7 @@ PAYMENT_TOKEN = os.getenv("PAYMENT_TOKEN")
 CHANNEL_ID = -1003328408384
 ADMIN_ID = 405491563
 OFFER_FILENAME = 'oferta.pdf' 
-DB_PATH = 'subscriptions.db' # Изменено для универсальности (сохраняется в папке с кодом)
+DB_PATH = '/data/subscriptions.db' # Изменено для универсальности (сохраняется в папке с кодом)
 
 # --- FSM: СОСТОЯНИЯ ДЛЯ СБОРА ДАННЫХ ---
 class PaymentStates(StatesGroup):
@@ -275,3 +275,4 @@ async def cmd_admin(message: Message):
 if __name__ == '__main__':
     init_db()
     executor.start_polling(dp, on_startup=on_startup, skip_updates=True)
+

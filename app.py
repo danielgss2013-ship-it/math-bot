@@ -10,6 +10,9 @@ from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+# --- НОВЫЙ ИМПОРТ ЛОГЕРА ---
+from logger import logger 
+# ----------------------------
 
 # --- 1. КОНФИГУРАЦИЯ И ПЕРЕМЕННЫЕ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -19,7 +22,7 @@ PAYMENT_TOKEN = os.getenv("PAYMENT_TOKEN")
 CHANNEL_ID = -1003328408384
 ADMIN_ID = 405491563
 OFFER_FILENAME = 'oferta.pdf' 
-DB_PATH = '/data/subscriptions.db'
+DB_PATH = 'subscriptions.db' # Изменено для универсальности (сохраняется в папке с кодом)
 
 # --- FSM: СОСТОЯНИЯ ДЛЯ СБОРА ДАННЫХ ---
 class PaymentStates(StatesGroup):
@@ -41,6 +44,7 @@ def init_db():
     """)
     conn.commit()
     conn.close()
+    logger.info("База данных успешно инициализирована.")
 
 def add_subscription(user_id, username, email):
     conn = sqlite3.connect(DB_PATH)
@@ -56,6 +60,7 @@ def add_subscription(user_id, username, email):
     """, (user_id, username, email, expire_date))
     conn.commit()
     conn.close()
+    logger.info(f"Подписка для пользователя {user_id} ({username}) продлена до {expire_date}.")
     return expire_date
 
 def get_subscription_status(user_id):
@@ -85,6 +90,7 @@ async def check_expirations(bot: Bot):
 
     cursor.execute("SELECT user_id, username FROM subscriptions WHERE expire_date <= ?", (today_str,))
     expired_users = cursor.fetchall()
+    logger.info(f"Найдено {len(expired_users)} просроченных подписок.")
 
     for user_id, username in expired_users:
         try:
@@ -92,9 +98,12 @@ async def check_expirations(bot: Bot):
             await bot.send_message(user_id, "Ваша подписка на MathClub истекла. Пожалуйста, продлите доступ!")
             cursor.execute("DELETE FROM subscriptions WHERE user_id = ?", (user_id,))
             conn.commit()
+            logger.info(f"Пользователь {user_id} ({username}) удален из канала и базы данных.")
         
         except Exception as e:
-            print(f"Ошибка при обработке истечения подписки для {username}: {e}")
+            # --- ЛОГИРОВАНИЕ ОШИБКИ ИСТЕЧЕНИЯ ---
+            logger.error(f"Ошибка при обработке истечения подписки для {username} (ID: {user_id}): {e}")
+            # -------------------------------------
 
     conn.close()
 
@@ -105,19 +114,18 @@ scheduler = AsyncIOScheduler()
 
 # --- 5. ФУНКЦИЯ ЗАПУСКА SCHEDULER'А ---
 async def on_startup(dp):
-    """
-    Эта функция запускается, когда цикл asyncio уже запущен.
-    Здесь мы безопасно запускаем планировщик.
-    """
     scheduler.add_job(check_expirations, 'cron', hour=0, minute=1, args=(bot,))
     scheduler.start()
-    print("APScheduler успешно запущен и настроен.")
+    # --- ЛОГИРОВАНИЕ УСПЕШНОГО ЗАПУСКА ---
+    logger.info("APScheduler успешно запущен и настроен.")
+    # -------------------------------------
 
 # --- 6. ОБРАБОТЧИКИ СОБЫТИЙ БОТА ---
 
 @dp.message_handler(commands=['start'], state='*')
 async def cmd_start(message: Message, state: FSMContext):
     await state.finish() 
+    logger.info(f"Команда /start от пользователя {message.from_user.id}.")
 
     info_text = (
         "🧠 **Добро пожаловать в «Твоя Математика»!**\n\n"
@@ -136,18 +144,18 @@ async def cmd_start(message: Message, state: FSMContext):
 @dp.callback_query_handler(lambda c: c.data == 'start_payment', state='*')
 async def process_start_payment(callback_query, state: FSMContext):
     """
-    Улучшенная функция: отвечает на callback в блоке try/except, 
-    чтобы предотвратить зависание при ошибках сети.
+    Функция с усиленной обработкой и логированием для отладки таймаутов.
     """
     
-    # 1. Пытаемся ответить на Callback Query. Это убирает загрузку.
+    # 1. Пытаемся ответить на Callback Query.
     try:
         await bot.answer_callback_query(callback_query.id)
+        logger.debug(f"Callback Query {callback_query.id} успешно отвечен. Переход к FSM.")
     except Exception as e:
-        # Если ответ не удался (таймаут/ошибка), записываем это и игнорируем ошибку,
-        # чтобы продолжить выполнение основной логики.
-        print(f"Ошибка при ответе на callback query: {e}") 
-        await asyncio.sleep(0.1) # Добавляем микро-паузу для сброса цикла
+        # --- КРИТИЧЕСКОЕ ЛОГИРОВАНИЕ СБОЯ ---
+        logger.error(f"Критическая ошибка/таймаут при ответе на Callback Query {callback_query.id}. Пользователь: {callback_query.from_user.id}. Ошибка: {e}") 
+        # --------------------------------------
+        await asyncio.sleep(0.5) # Даем паузу перед продолжением
         
     # 2. Переводим пользователя в состояние ожидания email
     await PaymentStates.waiting_for_email.set()
@@ -169,6 +177,7 @@ async def process_email(message: Message, state: FSMContext):
 
     await state.update_data(user_email=user_email)
     await PaymentStates.waiting_for_agreement.set()
+    logger.debug(f"Email '{user_email}' сохранен. Переход к соглашению.")
 
     agreement_keyboard = InlineKeyboardMarkup(row_width=1)
     agreement_keyboard.add(InlineKeyboardButton(text="✅ Я согласен с офертой", callback_data="agree_offer"))
@@ -182,7 +191,8 @@ async def process_email(message: Message, state: FSMContext):
     
     try:
        await bot.send_document(message.chat.id, InputFile(OFFER_FILENAME), reply_markup=agreement_keyboard)
-    except Exception:
+    except Exception as e:
+       logger.error(f"Ошибка при отправке файла оферты {OFFER_FILENAME}: {e}")
        await message.answer(f"Ошибка при отправке файла оферты. Пожалуйста, подтвердите согласие ниже:", reply_markup=agreement_keyboard)
 
 
@@ -191,6 +201,7 @@ async def process_agreement(callback_query, state: FSMContext):
     await bot.answer_callback_query(callback_query.id)
     
     await state.set_state(None)
+    logger.info(f"Пользователь {callback_query.from_user.id} согласился с офертой. Выставление счета.")
 
     await bot.send_invoice(
         chat_id=callback_query.from_user.id,
@@ -205,6 +216,7 @@ async def process_agreement(callback_query, state: FSMContext):
 
 @dp.pre_checkout_query_handler(lambda query: True)
 async def process_pre_checkout_query(pre_checkout_query):
+    logger.debug(f"Pre-checkout query ID: {pre_checkout_query.id}. Пользователь: {pre_checkout_query.from_user.id}.")
     await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
 
 
@@ -215,6 +227,7 @@ async def successful_payment(message: Message, state: FSMContext):
     
     user_data = await state.get_data()
     user_email = user_data.get('user_email', 'Email not collected') 
+    logger.info(f"Успешная оплата от пользователя {user_id}. Email: {user_email}.")
 
     expire_date = add_subscription(user_id, username, user_email)
 
@@ -224,6 +237,7 @@ async def successful_payment(message: Message, state: FSMContext):
         name=f"Оплата: {message.from_user.full_name}",
         expire_date=datetime.datetime.now() + datetime.timedelta(days=30)
     )
+    logger.info(f"Создана одноразовая ссылка для {user_id}: {invite.invite_link}")
 
     await bot.send_message(
         message.chat.id,

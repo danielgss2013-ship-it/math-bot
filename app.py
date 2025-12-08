@@ -3,7 +3,7 @@ import sqlite3
 import datetime
 import asyncio
 from aiogram import Bot, Dispatcher 
-from aiogram.utils import executor # Правильный импорт для aiogram 2.x
+from aiogram.utils import executor 
 from aiogram.types import Message, LabeledPrice, ContentType, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
 from aiogram.dispatcher.filters import Command
 from aiogram.dispatcher import FSMContext
@@ -11,7 +11,7 @@ from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# --- 1. КОНФИГУРАЦИЯ И ПЕРЕМЕННЫЕ (Хардкод по вашим данным) ---
+# --- 1. КОНФИГУРАЦИЯ И ПЕРЕМЕННЫЕ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 PAYMENT_TOKEN = os.getenv("PAYMENT_TOKEN")
 
@@ -103,7 +103,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 scheduler = AsyncIOScheduler()
 
-# --- 5. ФУНКЦИЯ ЗАПУСКА SCHEDULER'А (НОВОЕ) ---
+# --- 5. ФУНКЦИЯ ЗАПУСКА SCHEDULER'А ---
 async def on_startup(dp):
     """
     Эта функция запускается, когда цикл asyncio уже запущен.
@@ -112,7 +112,6 @@ async def on_startup(dp):
     scheduler.add_job(check_expirations, 'cron', hour=0, minute=1, args=(bot,))
     scheduler.start()
     print("APScheduler успешно запущен и настроен.")
-# -----------------------------------------------
 
 # --- 6. ОБРАБОТЧИКИ СОБЫТИЙ БОТА ---
 
@@ -136,8 +135,21 @@ async def cmd_start(message: Message, state: FSMContext):
 
 @dp.callback_query_handler(lambda c: c.data == 'start_payment', state='*')
 async def process_start_payment(callback_query, state: FSMContext):
-    await bot.answer_callback_query(callback_query.id)
+    """
+    Улучшенная функция: отвечает на callback в блоке try/except, 
+    чтобы предотвратить зависание при ошибках сети.
+    """
     
+    # 1. Пытаемся ответить на Callback Query. Это убирает загрузку.
+    try:
+        await bot.answer_callback_query(callback_query.id)
+    except Exception as e:
+        # Если ответ не удался (таймаут/ошибка), записываем это и игнорируем ошибку,
+        # чтобы продолжить выполнение основной логики.
+        print(f"Ошибка при ответе на callback query: {e}") 
+        await asyncio.sleep(0.1) # Добавляем микро-паузу для сброса цикла
+        
+    # 2. Переводим пользователя в состояние ожидания email
     await PaymentStates.waiting_for_email.set()
     
     await bot.send_message(
@@ -245,11 +257,7 @@ async def cmd_admin(message: Message):
             await message.answer("Неверный ID пользователя. Попробуйте: /admin 12345678")
 
 
-# --- 7. ЗАПУСК БОТА (ИСПРАВЛЕНО) ---
+# --- 7. ЗАПУСК БОТА ---
 if __name__ == '__main__':
-    # 1. Инициализация БД происходит до запуска цикла
     init_db()
-    
-    # 2. Запуск executor, который сам вызывает on_startup
     executor.start_polling(dp, on_startup=on_startup, skip_updates=True)
-

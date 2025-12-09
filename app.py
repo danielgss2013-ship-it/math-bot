@@ -2,10 +2,11 @@ import os
 import sqlite3
 import datetime
 import asyncio
-from aiogram import Bot, Dispatcher 
+# --- ИЗМЕНЕНИЕ: ИМПОРТИРУЕМ types ИЗ aiogram ---
+from aiogram import Bot, Dispatcher, types 
 from aiogram.utils import executor 
-# --- ИЗМЕНЕНИЕ: ДОБАВЛЕН ИМПОРТ CallbackQuery ---
-from aiogram.types import Message, LabeledPrice, ContentType, InlineKeyboardMarkup, InlineKeyboardButton, InputFile, CallbackQuery 
+# --- ИЗМЕНЕНИЕ: CallbackQuery теперь не нужен, так как используется types.CallbackQuery ---
+from aiogram.types import Message, LabeledPrice, ContentType, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
 from aiogram.dispatcher.filters import Command
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
@@ -137,9 +138,9 @@ async def cmd_start(message: Message, state: FSMContext):
     await message.answer(info_text, reply_markup=keyboard, parse_mode="Markdown")
 
 @dp.callback_query_handler(lambda c: c.data == 'start_payment', state='*')
-# --- ИСПРАВЛЕНИЕ: ДОБАВЛЕНИЕ ТИПА В СИГНАТУРУ ---
-async def process_start_payment(callback_query: CallbackQuery, state: FSMContext):
-# ----------------------------------------------------
+# --- ФИНАЛЬНАЯ СИГНАТУРА С types.CallbackQuery ---
+async def process_start_payment(callback_query: types.CallbackQuery, state: FSMContext):
+# --------------------------------------------------
     """
     Функция с усиленной обработкой и логированием для отладки таймаутов.
     """
@@ -192,7 +193,7 @@ async def process_email(message: Message, state: FSMContext):
 
 
 @dp.callback_query_handler(lambda c: c.data == 'agree_offer', state=PaymentStates.waiting_for_agreement)
-async def process_agreement(callback_query: CallbackQuery, state: FSMContext):
+async def process_agreement(callback_query: types.CallbackQuery, state: FSMContext):
     await bot.answer_callback_query(callback_query.id)
     
     await state.set_state(None)

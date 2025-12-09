@@ -180,7 +180,7 @@ async def process_email(message: Message, state: FSMContext):
 
     await bot.send_message(
         message.chat.id,
-        "📃 **Перед оплатой ознакомьтесь с Офертой и ПОПД**.\n\n"
+        "📃 **Перед оплатой ознакомьтесь с Офертой и Политикой конфидициальности**.\n\n"
         "Нажимая «Я согласен», вы подтверждаете свое согласие с условиями оказания услуг.",
         parse_mode="Markdown"
     )
@@ -271,3 +271,4 @@ async def cmd_admin(message: Message):
 if __name__ == '__main__':
     init_db()
     executor.start_polling(dp, on_startup=on_startup, skip_updates=True)
+

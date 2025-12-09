@@ -4,15 +4,14 @@ import datetime
 import asyncio
 from aiogram import Bot, Dispatcher 
 from aiogram.utils import executor 
-from aiogram.types import Message, LabeledPrice, ContentType, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
+# --- ИЗМЕНЕНИЕ: ДОБАВЛЕН ИМПОРТ CallbackQuery ---
+from aiogram.types import Message, LabeledPrice, ContentType, InlineKeyboardMarkup, InlineKeyboardButton, InputFile, CallbackQuery 
 from aiogram.dispatcher.filters import Command
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-# --- НОВЫЙ ИМПОРТ ЛОГЕРА ---
 from logger import logger 
-# ----------------------------
 
 # --- 1. КОНФИГУРАЦИЯ И ПЕРЕМЕННЫЕ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -22,7 +21,7 @@ PAYMENT_TOKEN = os.getenv("PAYMENT_TOKEN")
 CHANNEL_ID = -1003328408384
 ADMIN_ID = 405491563
 OFFER_FILENAME = 'oferta.pdf' 
-DB_PATH = '/data/subscriptions.db' # Изменено для универсальности (сохраняется в папке с кодом)
+DB_PATH = '/data/subscriptions.db' # Правильный путь для Amvera
 
 # --- FSM: СОСТОЯНИЯ ДЛЯ СБОРА ДАННЫХ ---
 class PaymentStates(StatesGroup):
@@ -101,9 +100,7 @@ async def check_expirations(bot: Bot):
             logger.info(f"Пользователь {user_id} ({username}) удален из канала и базы данных.")
         
         except Exception as e:
-            # --- ЛОГИРОВАНИЕ ОШИБКИ ИСТЕЧЕНИЯ ---
             logger.error(f"Ошибка при обработке истечения подписки для {username} (ID: {user_id}): {e}")
-            # -------------------------------------
 
     conn.close()
 
@@ -116,9 +113,7 @@ scheduler = AsyncIOScheduler()
 async def on_startup(dp):
     scheduler.add_job(check_expirations, 'cron', hour=0, minute=1, args=(bot,))
     scheduler.start()
-    # --- ЛОГИРОВАНИЕ УСПЕШНОГО ЗАПУСКА ---
     logger.info("APScheduler успешно запущен и настроен.")
-    # -------------------------------------
 
 # --- 6. ОБРАБОТЧИКИ СОБЫТИЙ БОТА ---
 
@@ -142,7 +137,9 @@ async def cmd_start(message: Message, state: FSMContext):
     await message.answer(info_text, reply_markup=keyboard, parse_mode="Markdown")
 
 @dp.callback_query_handler(lambda c: c.data == 'start_payment', state='*')
-async def process_start_payment(callback_query, state: FSMContext):
+# --- ИСПРАВЛЕНИЕ: ДОБАВЛЕНИЕ ТИПА В СИГНАТУРУ ---
+async def process_start_payment(callback_query: CallbackQuery, state: FSMContext):
+# ----------------------------------------------------
     """
     Функция с усиленной обработкой и логированием для отладки таймаутов.
     """
@@ -152,10 +149,8 @@ async def process_start_payment(callback_query, state: FSMContext):
         await bot.answer_callback_query(callback_query.id)
         logger.debug(f"Callback Query {callback_query.id} успешно отвечен. Переход к FSM.")
     except Exception as e:
-        # --- КРИТИЧЕСКОЕ ЛОГИРОВАНИЕ СБОЯ ---
         logger.error(f"Критическая ошибка/таймаут при ответе на Callback Query {callback_query.id}. Пользователь: {callback_query.from_user.id}. Ошибка: {e}") 
-        # --------------------------------------
-        await asyncio.sleep(0.5) # Даем паузу перед продолжением
+        await asyncio.sleep(0.5)
         
     # 2. Переводим пользователя в состояние ожидания email
     await PaymentStates.waiting_for_email.set()
@@ -197,7 +192,7 @@ async def process_email(message: Message, state: FSMContext):
 
 
 @dp.callback_query_handler(lambda c: c.data == 'agree_offer', state=PaymentStates.waiting_for_agreement)
-async def process_agreement(callback_query, state: FSMContext):
+async def process_agreement(callback_query: CallbackQuery, state: FSMContext):
     await bot.answer_callback_query(callback_query.id)
     
     await state.set_state(None)
@@ -275,4 +270,3 @@ async def cmd_admin(message: Message):
 if __name__ == '__main__':
     init_db()
     executor.start_polling(dp, on_startup=on_startup, skip_updates=True)
-

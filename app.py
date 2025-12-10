@@ -5,7 +5,7 @@ import asyncio
 from aiogram import Bot, Dispatcher, types 
 from aiogram.utils import executor 
 from aiogram.types import Message, LabeledPrice, ContentType, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
-from aiogram.dispatcher.filters import Command
+from aiogram.dispatcher.filters import Command # ИМПОРТИРУЕМ Command
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
@@ -180,7 +180,7 @@ async def process_start_payment(callback_query: types.CallbackQuery, state: FSMC
 
 @dp.callback_query_handler(lambda c: c.data == 'skip_promo', state=PaymentStates.waiting_for_promo_code)
 async def skip_promo_callback(callback_query: types.CallbackQuery, state: FSMContext):
-    await bot.answer_callback_query(callback_query.id, text="Пропуск.")
+    await bot.answer_callback_query(callback_query.id, text="Пропуск. Применяется полная цена.")
     
     # Устанавливаем базовую цену и пропускаем ввод промокода
     await state.update_data(payment_price=BASE_PRICE, promo_applied=False)
@@ -237,7 +237,7 @@ async def process_email(message: Message, state: FSMContext):
 
     await bot.send_message(
         message.chat.id,
-        "📃 **Перед оплатой ознакомьтесь с Офертой и Политикой конфидециальности**.\n\n"
+        "📃 **Перед оплатой ознакомьтесь с Офертой и ПОПД**.\n\n"
         "Нажимая «Я согласен», вы подтверждаете свое согласие с условиями оказания услуг.",
         parse_mode="Markdown"
     )
@@ -318,13 +318,14 @@ async def successful_payment(message: Message, state: FSMContext):
         await bot.send_message(user_id, "⚠️ **Критическая ошибка!** Оплата прошла, но бот не смог выдать ссылку. Пожалуйста, обратитесь в поддержку @dankurbanoff.", parse_mode="Markdown")
 
 
-@dp.message_handler(commands=['admin'])
+@dp.message_handler(Command('admin')) # ИСПОЛЬЗУЕМ Command
 async def cmd_admin(message: Message):
     if message.from_user.id != ADMIN_ID:
         await message.answer("Нет доступа.")
         return
 
     # Получаем аргументы команды, убираем пробелы и приводим к нижнему регистру для надежности
+    # Используем message.get_args() для надежного извлечения аргументов
     arg = message.get_args().strip().lower()
 
     # Определяем режим

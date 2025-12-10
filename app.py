@@ -5,7 +5,7 @@ import asyncio
 from aiogram import Bot, Dispatcher, types 
 from aiogram.utils import executor 
 from aiogram.types import Message, LabeledPrice, ContentType, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
-from aiogram.dispatcher.filters import Command # ИМПОРТИРУЕМ Command
+from aiogram.dispatcher.filters import Command 
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
@@ -18,7 +18,7 @@ PAYMENT_TOKEN = os.getenv("PAYMENT_TOKEN")
 
 # Ваши данные
 CHANNEL_ID = -1003328408384
-ADMIN_ID = 405491563
+ADMIN_ID = 405491563 # ВАШ АДМИН ID
 OFFER_FILENAME = 'oferta.pdf' 
 DB_PATH = '/data/subscriptions.db'
 
@@ -26,6 +26,7 @@ DB_PATH = '/data/subscriptions.db'
 BASE_PRICE = 150000   # 1500 RUB
 PROMO_PRICE = 75000   # 750 RUB (50% скидка)
 PROMO_CODE = 'FIRST'
+ADMIN_TIMEZONE = datetime.timezone(datetime.timedelta(hours=3)) # UTC+3
 
 # --- FSM: СОСТОЯНИЯ ДЛЯ СБОРА ДАННЫХ ---
 class PaymentStates(StatesGroup):
@@ -173,7 +174,7 @@ async def process_start_payment(callback_query: types.CallbackQuery, state: FSMC
     await bot.send_message(
         callback_query.from_user.id,
         "🎁 **Введите промокод (если есть)**.\n"
-        "Например, введите `FIRST` для получения скидки 50% на первый месяц.",
+        "Регистр не важен☺️",
         reply_markup=promo_keyboard, # Прикрепляем новую клавиатуру
         parse_mode="Markdown"
     )
@@ -237,7 +238,7 @@ async def process_email(message: Message, state: FSMContext):
 
     await bot.send_message(
         message.chat.id,
-        "📃 **Перед оплатой ознакомьтесь с Офертой и ПОПД**.\n\n"
+        "📃 **Перед оплатой ознакомьтесь с Офертой и Политикой конфидециальности**.\n\n"
         "Нажимая «Я согласен», вы подтверждаете свое согласие с условиями оказания услуг.",
         parse_mode="Markdown"
     )
@@ -318,85 +319,72 @@ async def successful_payment(message: Message, state: FSMContext):
         await bot.send_message(user_id, "⚠️ **Критическая ошибка!** Оплата прошла, но бот не смог выдать ссылку. Пожалуйста, обратитесь в поддержку @dankurbanoff.", parse_mode="Markdown")
 
 
-@dp.message_handler(Command('admin')) # ИСПОЛЬЗУЕМ Command
+@dp.message_handler(Command('admin'))
 async def cmd_admin(message: Message):
+    
+    # 1. ПРОВЕРКА АДМИНИСТРАТОРА
     if message.from_user.id != ADMIN_ID:
         await message.answer("Нет доступа.")
         return
 
-    # Получаем аргументы команды, убираем пробелы и приводим к нижнему регистру для надежности
-    # Используем message.get_args() для надежного извлечения аргументов
-    arg = message.get_args().strip().lower()
+    # 2. ПОЛУЧЕНИЕ ВРЕМЕНИ (UTC+3)
+    current_time_utc3 = datetime.datetime.now(ADMIN_TIMEZONE).strftime('%H:%M:%S')
 
-    # Определяем режим
-    if not arg:
-        # Если аргументов нет (просто /admin), по умолчанию режим 'all'
-        mode = 'all'
-    elif arg == 'active' or arg == 'all':
-        # Если указано 'active' или 'all'
-        mode = arg
-    else:
-        # Пытаемся обработать как ID пользователя
-        try:
-            user_id = int(arg) 
-            status = get_subscription_status(user_id)
-            await message.answer(f"Статус подписки для ID {user_id}: **{status}**", parse_mode="Markdown")
-        except ValueError:
-            await message.answer(
-                f"Неверный ID пользователя или команда.\n\n"
-                f"Используйте:\n"
-                f"• `/admin` (Показать всех)\n"
-                f"• `/admin active` (Только активные)\n"
-                f"• `/admin [числовой ID]`", 
-                parse_mode="Markdown"
-            )
-        return
-        
-    # --- Режим: Вывод списка подписчиков (mode = 'all' или 'active') ---
-
-    all_subs = get_subscription_status() # Получаем все записи
-    response = ["**--- СПИСОК ПОДПИСЧИКОВ ---**"]
+    # 3. ПОЛУЧЕНИЕ ВСЕХ ПОДПИСЧИКОВ
+    all_subs = get_subscription_status() 
+    
+    # 4. ФОРМИРОВАНИЕ ПРИВЕТСТВЕННОЙ ЧАСТИ
+    header = (
+        f"👋 **Добро пожаловать, Администратор!**\n"
+        f"Текущее время (UTC+3): **{current_time_utc3}**\n\n"
+        f"**--- СПИСОК ПОДПИСЧИКОВ В БАЗЕ ---**"
+    )
+    
+    response = [header]
     active_count = 0
     
-    for user_id, username, email, expire_date_str in all_subs:
-        expire_date = datetime.datetime.strptime(expire_date_str, '%Y-%m-%d')
-        is_active = expire_date > datetime.datetime.now()
+    # 5. ОБРАБОТКА И ФОРМИРОВАНИЕ СПИСКА
+    for user_id_db, username, email, expire_date_str in all_subs:
         
-        # Фильтрация по режиму
-        if mode == 'active' and not is_active:
-            continue
-            
+        # Конвертация даты для проверки активности
+        try:
+            expire_date = datetime.datetime.strptime(expire_date_str, '%Y-%m-%d')
+            is_active = expire_date > datetime.datetime.now()
+        except ValueError:
+            is_active = False # На случай, если дата в базе повреждена
+            expire_date_str = "Ошибка даты"
+
         if is_active:
             active_count += 1
         
         status_icon = "🟢" if is_active else "🔴"
         
-        # Email включен в вывод
+        # Добавление записи
         response.append(
-            f"{status_icon} **{username}** (ID: {user_id})\n"
-            f"   Email: {email}\n"
-            f"   До: {expire_date_str}\n"
+            f"{status_icon} **{username}** (ID: {user_id_db})\n"
+            f"   Email: `{email}`\n"
+            f"   До: {expire_date_str}"
         )
         
-    if len(response) == 1: # Только заголовок, нет записей
-         await message.answer("В базе нет записей о подписчиках.")
-         return
+    # 6. ДОБАВЛЕНИЕ СТАТИСТИКИ
+    summary = (
+        f"\n--- СТАТИСТИКА ---\n"
+        f"✅ **Активных подписок:** {active_count}\n"
+        f"📋 **Всего записей в базе:** {len(all_subs)}\n"
+    )
+    
+    response.append(summary)
 
-    # Разбиваем длинное сообщение на части, чтобы Telegram его принял
+    # 7. ОТПРАВКА
+    if len(all_subs) == 0:
+         await message.answer(f"{header}\n\nВ базе нет записей о подписчиках.", parse_mode="Markdown")
+         return
+    
+    # Объединение и разбивка длинного сообщения на части
     chunk_size = 4000
     full_response = "\n".join(response)
-    
-    # Добавляем общую статистику
-    if mode == 'active':
-         # При показе 'active' считаем только активные записи
-         header = f"✅ **ВСЕГО АКТИВНЫХ ПОДПИСЧИКОВ: {active_count}**\n\n"
-    else: # mode == 'all'
-         # При показе 'all' считаем все записи в базе
-         header = f"📋 **ВСЕГО ЗАПИСЕЙ В БАЗЕ: {len(all_subs)}** (Активных: {active_count})\n\n"
-    
-    full_response = header + full_response
 
-    # Отправка сообщений по частям
+    # Отправка сообщений по частям (на случай, если список очень длинный)
     for i in range(0, len(full_response), chunk_size):
         await message.answer(full_response[i:i + chunk_size], parse_mode="Markdown")
 

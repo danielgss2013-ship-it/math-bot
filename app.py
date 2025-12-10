@@ -27,6 +27,7 @@ BASE_PRICE = 150000   # 1500 RUB
 PROMO_PRICE = 75000   # 750 RUB (50% скидка)
 PROMO_CODE = 'FIRST'
 ADMIN_TIMEZONE = datetime.timezone(datetime.timedelta(hours=3)) # UTC+3
+SUPPORT_CONTACT = "@dankurbanoff" # КОНТАКТ ПОДДЕРЖКИ
 
 # --- FSM: СОСТОЯНИЯ ДЛЯ СБОРА ДАННЫХ ---
 class PaymentStates(StatesGroup):
@@ -54,7 +55,8 @@ def get_current_subscription(user_id):
     result = cursor.fetchone()
     conn.close()
     if result:
-        return datetime.datetime.strptime(result[0], '%Y-%m-%d')
+        # Возвращаем объект datetime.date для удобного сравнения
+        return datetime.datetime.strptime(result[0], '%Y-%m-%d').date()
     return None
 
 def add_subscription(user_id, username, email, days=30, is_renewal=False):
@@ -64,7 +66,7 @@ def add_subscription(user_id, username, email, days=30, is_renewal=False):
     current_expiry = get_current_subscription(user_id)
     
     # Дата начала подписки: либо сегодня, либо дата сразу после истечения текущей
-    start_date = datetime.datetime.now()
+    start_date = datetime.datetime.now().date()
     if current_expiry and current_expiry > start_date:
         start_date = current_expiry
         
@@ -100,9 +102,9 @@ def get_subscription_status(user_id=None):
             return "Нет подписки"
 
         expire_date_str = result[0]
-        expire_date = datetime.datetime.strptime(expire_date_str, '%Y-%m-%d')
+        expire_date = datetime.datetime.strptime(expire_date_str, '%Y-%m-%d').date()
         
-        if expire_date > datetime.datetime.now():
+        if expire_date > datetime.datetime.now().date():
             return f"Активна до {expire_date_str}"
         else:
             return "Истекла"
@@ -138,7 +140,7 @@ async def check_expirations(bot: Bot):
     today = datetime.datetime.now().date()
     
     # 1. ПОИСК ПОДПИСОК ДЛЯ УВЕДОМЛЕНИЯ ЗА 3 ДНЯ
-    future_date_str = (datetime.datetime.now() + datetime.timedelta(days=3)).strftime('%Y-%m-%d')
+    future_date_str = (datetime.datetime.now().date() + datetime.timedelta(days=3)).strftime('%Y-%m-%d')
     
     # Ищем подписки, которые истекают через 3 дня
     cursor.execute("SELECT user_id FROM subscriptions WHERE expire_date = ?", (future_date_str,))
@@ -150,7 +152,7 @@ async def check_expirations(bot: Bot):
             "⏳ **ВНИМАНИЕ! Ваша подписка на Твоя Математика истекает через 3 дня** "
             f"({future_date_str}).\n\n"
             "Пожалуйста, убедитесь, что на вашей карте достаточно средств для автоматического "
-            "продления (1500 ₽). Чтобы проверить статус, отправьте `/start`."
+            "продления (1500 ₽). Чтобы проверить статус, отправьте `/status`."
         )
         await send_notification(bot, user_id, message)
 
@@ -228,7 +230,7 @@ async def process_start_payment(callback_query: types.CallbackQuery, state: FSMC
     await bot.send_message(
         callback_query.from_user.id,
         "🎁 **Введите промокод (если есть)**.\n"
-        "Регистр не важен☺️",
+        "Регистр не важен☺️.",
         reply_markup=promo_keyboard,
         parse_mode="Markdown"
     )
@@ -341,7 +343,6 @@ async def successful_payment(message: Message, state: FSMContext):
         user_data = await state.get_data()
         user_email = user_data.get('user_email', 'Email not collected') 
         
-        # ДОБАВЛЕНИЕ ПОДПИСКИ И УВЕДОМЛЕНИЕ О ПРИОБРЕТЕНИИ
         expire_date = add_subscription(user_id, username, user_email, days=30, is_renewal=False) 
 
         invite = await bot.create_chat_invite_link(
@@ -352,21 +353,23 @@ async def successful_payment(message: Message, state: FSMContext):
         )
         logger.info(f"Создана одноразовая ссылка для {user_id}: {invite.invite_link}")
 
+        # УЛУЧШЕННОЕ СООБЩЕНИЕ ОБ УСПЕШНОЙ ОПЛАТЕ
         await bot.send_message(
             message.chat.id,
             f"🎉 **Оплата успешно произведена, добро пожаловать в клуб «Твоя Математика»!**\n\n"
-            f"Ваша подписка активна до {expire_date}.\n"
+            f"Ваша подписка активна до **{expire_date}**.\n"
+            f"Для проверки статуса используйте команду `/status`.\n\n"
             f"Вот ваша **одноразовая** ссылка для входа: {invite.invite_link}\n\n"
-            f"Если есть вопросы — пишите в поддержку.",
+            f"Если есть вопросы — пишите в поддержку **{SUPPORT_CONTACT}**.",
             parse_mode="Markdown"
         )
         await state.finish() 
 
     except Exception as e:
         logger.error(f"КРИТИЧЕСКАЯ ОШИБКА при обработке успешной оплаты для {user_id}: {e}")
-        await bot.send_message(user_id, "⚠️ **Критическая ошибка!** Оплата прошла, но бот не смог выдать ссылку. Пожалуйста, обратитесь в поддержку @dankurbanoff.", parse_mode="Markdown")
+        await bot.send_message(user_id, f"⚠️ **Критическая ошибка!** Оплата прошла, но бот не смог выдать ссылку. Пожалуйста, обратитесь в поддержку {SUPPORT_CONTACT}.", parse_mode="Markdown")
 
-# --- НОВЫЙ ОБРАБОТЧИК ДЛЯ АВТОМАТИЧЕСКОГО ПРОДЛЕНИЯ ---
+# --- ОБРАБОТЧИК АВТОМАТИЧЕСКОГО ПРОДЛЕНИЯ ---
 @dp.message_handler(content_types=ContentType.SUCCESSFUL_PAYMENT)
 async def auto_renewal_payment(message: Message, state: FSMContext):
     
@@ -381,17 +384,62 @@ async def auto_renewal_payment(message: Message, state: FSMContext):
     
     user_email = result[0] if result else 'Email not found'
 
-    # Уведомление об успешном продлении
     expire_date = add_subscription(user_id, username, user_email, days=30, is_renewal=True) 
     
     await send_notification(
         bot, user_id, 
         f"✅ **Ваша подписка на Твоя Математика успешно продлена!**\n"
-        f"Новая дата истечения: **{expire_date}**."
+        f"Новая дата истечения: **{expire_date}**.\n"
+        f"Статус всегда можно проверить командой `/status`."
     )
 
+# --- НОВАЯ КОМАНДА /STATUS ---
 
-# --- РАСШИРЕННЫЕ АДМИН-КОМАНДЫ ---
+@dp.message_handler(Command('status'))
+async def cmd_status(message: Message):
+    user_id = message.from_user.id
+    
+    # Получаем статус и дату истечения
+    status_text = get_subscription_status(user_id)
+    
+    if status_text == "Нет подписки":
+        response = (
+            "❌ **У вас нет активной подписки на Твоя Математика.**\n\n"
+            "Чтобы получить доступ, нажмите `/start`."
+        )
+    elif status_text == "Истекла":
+        response = (
+            "⚠️ **Ваша подписка истекла.**\n\n"
+            "Пожалуйста, продлите доступ, нажав `/start`."
+        )
+    else: # Активна до [дата]
+        expire_date_str = status_text.split()[-1]
+        
+        # Генерация новой одноразовой ссылки на случай, если старая была утеряна
+        try:
+            invite = await bot.create_chat_invite_link(
+                chat_id=CHANNEL_ID,
+                member_limit=1,
+                name=f"Статус: {message.from_user.full_name}",
+                expire_date=datetime.datetime.now() + datetime.timedelta(minutes=5) # ссылка действует 5 минут
+            )
+            invite_link = invite.invite_link
+        except Exception as e:
+             logger.error(f"Ошибка при создании ссылки для статуса {user_id}: {e}")
+             invite_link = "*(Не удалось создать ссылку. Обратитесь в поддержку.)*"
+
+        response = (
+            "✅ **Ваша подписка на Твоя Математика активна!**\n\n"
+            f"Срок действия: **до {expire_date_str}**.\n\n"
+            "🔗 **Одноразовая ссылка для входа:**\n"
+            f"`{invite_link}`\n"
+            "*(Ссылка действительна в течение 5 минут. Пожалуйста, сохраните ее или используйте сразу.)*\n\n"
+            f"По всем вопросам: {SUPPORT_CONTACT}"
+        )
+        
+    await message.answer(response, parse_mode="Markdown")
+
+# --- АДМИН-КОМАНДЫ (БЕЗ ИЗМЕНЕНИЙ В ЛОГИКЕ) ---
 
 @dp.message_handler(Command('admin'))
 async def cmd_admin(message: Message):
@@ -417,7 +465,7 @@ async def cmd_admin(message: Message):
         
         try:
             expire_date = datetime.datetime.strptime(expire_date_str, '%Y-%m-%d')
-            is_active = expire_date > datetime.datetime.now()
+            is_active = expire_date.date() > datetime.datetime.now().date()
         except ValueError:
             is_active = False
             expire_date_str = "Ошибка даты"
@@ -470,7 +518,6 @@ async def cmd_add(message: Message):
     except ValueError:
         return await message.answer("❌ **USER_ID и ДНИ** должны быть числовыми значениями.")
 
-    # Пытаемся получить username и email из базы для логирования
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT username, email FROM subscriptions WHERE user_id = ?", (user_id,))
@@ -486,15 +533,14 @@ async def cmd_add(message: Message):
     
     new_expire_date = add_subscription(user_id, username, email, days=days, is_renewal=True)
 
-    # Уведомление администратора
     await message.answer(f"✅ Подписка для пользователя **{user_id} ({username})** успешно **продлена** на **{days}** дней.\n"
                          f"Новая дата истечения: **{new_expire_date}**", parse_mode="Markdown")
     
-    # Уведомление пользователя (если бот не заблокирован)
     await send_notification(
         bot, user_id, 
         f"🎉 **Ваш доступ к Твоя Математика был вручную продлен Администратором!**\n"
-        f"Срок действия продлен на **{days}** дней. Новая дата истечения: **{new_expire_date}**."
+        f"Срок действия продлен на **{days}** дней. Новая дата истечения: **{new_expire_date}**.\n"
+        f"Проверить статус: `/status`."
     )
 
 
@@ -529,7 +575,7 @@ async def cmd_remove(message: Message):
     try:
         await bot.ban_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
         channel_status = "Успешно удален/забанен в канале."
-        await send_notification(bot, user_id, "🚫 **Ваш доступ к Твоя Математика был аннулирован Администратором.** Вы были удалены из канала.")
+        await send_notification(bot, user_id, f"🚫 **Ваш доступ к Твоя Математика был аннулирован Администратором.** Вы были удалены из канала. По всем вопросам: {SUPPORT_CONTACT}")
     except Exception as e:
         channel_status = f"Ошибка при удалении/бане в канале: {e}"
         logger.error(f"Ошибка бана пользователя {user_id}: {e}")
@@ -551,4 +597,3 @@ async def cmd_remove(message: Message):
 if __name__ == '__main__':
     init_db()
     executor.start_polling(dp, on_startup=on_startup, skip_updates=True)
-

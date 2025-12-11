@@ -29,6 +29,11 @@ PROMO_CODE = 'FIRST'
 ADMIN_TIMEZONE = datetime.timezone(datetime.timedelta(hours=3)) # UTC+3
 SUPPORT_CONTACT = "@dankurbanoff" # КОНТАКТ ПОДДЕРЖКИ
 
+# ❗ КОНСТАНТЫ ДЛЯ РЕФЕРАЛЬНОЙ ПРОГРАММЫ
+BOT_USERNAME = "tvoya_math_bot" # ❗ ВНЕСЕННЫЙ ЮЗЕРНЕЙМ
+SUBSCRIPTION_DAYS = 30
+REFERRAL_BONUS_DAYS = 14 # Бонус за привлеченного друга
+
 # --- FSM: СОСТОЯНИЯ ДЛЯ СБОРА ДАННЫХ ---
 class PaymentStates(StatesGroup):
     waiting_for_promo_code = State()
@@ -59,41 +64,45 @@ def get_current_subscription(user_id):
         return datetime.datetime.strptime(result[0], '%Y-%m-%d').date()
     return None
 
-def add_subscription(user_id, username, email, days=30, is_renewal=False):
+def add_subscription(user_id, username, email, days, is_renewal=False):
+    """
+    Добавляет или продлевает подписку. 
+    Если подписка активна, дни добавляются к дате истечения.
+    """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
     current_expiry = get_current_subscription(user_id)
     
-    # Дата начала подписки: либо сегодня, либо дата сразу после истечения текущей
+    # Дата начала нового периода: сегодня ИЛИ дата истечения текущей подписки (если она в будущем)
     start_date = datetime.datetime.now().date()
     if current_expiry and current_expiry > start_date:
         start_date = current_expiry
         
     new_expire_date = (start_date + datetime.timedelta(days=days)).strftime('%Y-%m-%d')
     
+    # Обновляем также username и email на всякий случай
     cursor.execute("""
         INSERT INTO subscriptions (user_id, username, email, expire_date)
         VALUES (?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
             expire_date = ?,
+            username = ?,
             email = ?
-    """, (user_id, username, email, new_expire_date, new_expire_date, email))
+    """, (user_id, username, email, new_expire_date, new_expire_date, username, email))
     conn.commit()
     conn.close()
     
     action = "продлена" if is_renewal else "добавлена"
-    logger.info(f"Подписка для пользователя {user_id} ({username}) {action} до {new_expire_date}.")
+    logger.info(f"Подписка для пользователя {user_id} ({username}) {action} до {new_expire_date}. Добавлено {days} дней.")
     
     return new_expire_date
-
 
 def get_subscription_status(user_id=None):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
     if user_id:
-        # Режим: Проверка одного пользователя
         cursor.execute("SELECT expire_date FROM subscriptions WHERE user_id = ?", (user_id,))
         result = cursor.fetchone()
         conn.close()
@@ -110,11 +119,20 @@ def get_subscription_status(user_id=None):
             return "Истекла"
     
     else:
-        # Режим: Получение всех пользователей
         cursor.execute("SELECT user_id, username, email, expire_date FROM subscriptions ORDER BY expire_date DESC")
         results = cursor.fetchall()
         conn.close()
         return results
+
+def get_user_info_from_db(user_id):
+    """Извлекает имя пользователя и email из базы."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT username, email FROM subscriptions WHERE user_id = ?", (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    # Возвращаем (username, email) или None
+    return result
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -142,7 +160,6 @@ async def check_expirations(bot: Bot):
     # 1. ПОИСК ПОДПИСОК ДЛЯ УВЕДОМЛЕНИЯ ЗА 3 ДНЯ
     future_date_str = (datetime.datetime.now().date() + datetime.timedelta(days=3)).strftime('%Y-%m-%d')
     
-    # Ищем подписки, которые истекают через 3 дня
     cursor.execute("SELECT user_id FROM subscriptions WHERE expire_date = ?", (future_date_str,))
     users_to_notify = cursor.fetchall()
     
@@ -187,6 +204,7 @@ scheduler = AsyncIOScheduler()
 
 # --- 5. ФУНКЦИЯ ЗАПУСКА SCHEDULER'А ---
 async def on_startup(dp):
+    await bot.delete_webhook(drop_pending_updates=True) 
     scheduler.add_job(check_expirations, 'cron', hour=0, minute=1, args=(bot,))
     scheduler.start()
     logger.info("APScheduler успешно запущен и настроен.")
@@ -197,6 +215,28 @@ async def on_startup(dp):
 @dp.message_handler(commands=['start'], state='*')
 async def cmd_start(message: Message, state: FSMContext):
     await state.finish() 
+    
+    # 🌟 ЛОГИКА: ПРОВЕРКА РЕФЕРАЛЬНОГО КОДА
+    payload = message.get_args()
+    if payload and payload.startswith('ref_'):
+        try:
+            # Получаем ID реферера из кода (ref_1234567)
+            referrer_id = int(payload.split('_')[1])
+            
+            # Проверяем: 1. Не реферер ли сам себя? 2. Активен ли реферер?
+            is_active_referrer = get_subscription_status(referrer_id).startswith("Активна")
+            
+            if referrer_id != message.from_user.id and is_active_referrer:
+                await state.update_data(referrer_id=referrer_id)
+                logger.info(f"Referral detected: User {message.from_user.id} referred by {referrer_id}")
+                await message.answer("🤝 Вы пришли по приглашению! Ваш друг получит бонус после вашей оплаты.")
+            else:
+                 logger.info(f"Invalid referral: Self-referral or referrer {referrer_id} is inactive.")
+
+        except (ValueError, IndexError):
+            logger.warning(f"Invalid referral code format: {payload}")
+
+
     logger.info(f"Команда /start от пользователя {message.from_user.id}.")
 
     info_text = (
@@ -205,7 +245,7 @@ async def cmd_start(message: Message, state: FSMContext):
         "🔸 Регулярные разборы сложных задач.\n"
         "🔸 Прямые консультации с преподавателем.\n"
         "🔸 Архив всех материалов.\n\n"
-        "💶ГАРАНТИЯ: Мы вернем оплату в полном объеме, если канал вам не понравится, в течение первых 24 часов!\n\n"
+        "💵 **ГАРАНТИЯ:** Мы вернем оплату в полном объеме, если канал вам не понравится, в течение первых 24 часов!\n\n"
         "Цена: **1500 рублей/месяц**."
     )
     
@@ -333,74 +373,128 @@ async def process_pre_checkout_query(pre_checkout_query):
     await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
 
 
+# 🌟 ЕДИНЫЙ ОБРАБОТЧИК УСПЕШНОЙ ОПЛАТЫ (ОХВАТЫВАЕТ И ПЕРВУЮ ПОКУПКУ, И ПРОДЛЕНИЕ)
+
 @dp.message_handler(content_types=ContentType.SUCCESSFUL_PAYMENT)
-async def successful_payment(message: Message, state: FSMContext):
+async def handle_successful_payment(message: Message, state: FSMContext):
     user_id = message.from_user.id
     username = message.from_user.username or 'N/A'
     
-    logger.info(f"Получено сообщение об успешной оплате от пользователя {user_id}.")
+    logger.info(f"Получено сообщение об успешной оплате от пользователя {user_id}. Сумма: {message.successful_payment.total_amount/100:.0f} RUB.")
 
-    try:
-        user_data = await state.get_data()
-        user_email = user_data.get('user_email', 'Email not collected') 
+    # Проверка: если в FSM есть данные о почте/referrer'е, это первая покупка после /start. 
+    user_data_check = await state.get_data()
+    is_initial_purchase = 'user_email' in user_data_check 
+    
+    
+    if not is_initial_purchase and get_subscription_status(user_id).startswith("Активна"):
+         # --- ЛОГИКА АВТОМАТИЧЕСКОГО ПРОДЛЕНИЯ ---
         
-        expire_date = add_subscription(user_id, username, user_email, days=30, is_renewal=False) 
+        user_info = get_user_info_from_db(user_id)
+        user_email = user_info[1] if user_info else 'Email not found'
+        
+        expire_date = add_subscription(user_id, username, user_email, days=SUBSCRIPTION_DAYS, is_renewal=True) 
+        
+        await send_notification(
+            bot, user_id, 
+            f"✅ **Ваша подписка на Твоя Математика успешно продлена!**\n"
+            f"Новая дата истечения: **{expire_date}**.\n"
+            f"Статус всегда можно проверить командой `/status`."
+        )
+        return
 
+    # --- ЛОГИКА ПЕРВОЙ ПОКУПКИ (или покупки, совершенной после /start) ---
+    
+    user_data = await state.get_data()
+    user_email = user_data.get('user_email', 'Email not collected') 
+    
+    # A. ДОБАВЛЕНИЕ ПОДПИСКИ НОВОМУ КЛИЕНТУ
+    expire_date = add_subscription(user_id, username, user_email, days=SUBSCRIPTION_DAYS, is_renewal=False) 
+
+    # B. ЛОГИКА РЕФЕРАЛЬНОГО ПРОДЛЕНИЯ
+    referrer_id = user_data.get('referrer_id')
+    referral_message = ""
+    
+    if referrer_id:
+        ref_info = get_user_info_from_db(referrer_id)
+        if ref_info:
+            ref_username, ref_email = ref_info
+            
+            # Добавляем 14 дней к подписке реферера
+            new_ref_expire_date = add_subscription(referrer_id, ref_username, ref_email, days=REFERRAL_BONUS_DAYS, is_renewal=True)
+            
+            # Уведомление реферера
+            await send_notification(
+                bot, referrer_id, 
+                f"🎁 **ПОДАРОК!** Ваш друг **@{username}** успешно оплатил подписку!\n\n"
+                f"Вы получаете **{REFERRAL_BONUS_DAYS} дней** бесплатного доступа в клуб.\n"
+                f"Новая дата истечения вашей подписки: **{new_ref_expire_date}**."
+            )
+            
+            referral_message = f"🤝 Вы пришли по рекомендации! Ваш друг **@{ref_username}** получил в подарок **{REFERRAL_BONUS_DAYS} дней** доступа.\n"
+        else:
+             logger.warning(f"Referrer ID {referrer_id} not found in DB. Cannot credit.")
+    
+
+    # C. ВЫДАЧА ССЫЛКИ И ФИНАЛЬНОЕ СООБЩЕНИЕ
+    try:
         invite = await bot.create_chat_invite_link(
             chat_id=CHANNEL_ID,
             member_limit=1,
             name=f"Оплата: {message.from_user.full_name}",
-            expire_date=datetime.datetime.now() + datetime.timedelta(days=30)
+            expire_date=datetime.datetime.now() + datetime.timedelta(days=SUBSCRIPTION_DAYS)
         )
         logger.info(f"Создана одноразовая ссылка для {user_id}: {invite.invite_link}")
 
-        # УЛУЧШЕННОЕ СООБЩЕНИЕ ОБ УСПЕШНОЙ ОПЛАТЕ
+        # D. ФИНАЛЬНОЕ СООБЩЕНИЕ (ВКЛЮЧАЯ РЕФЕРАЛЬНУЮ ИНФОРМАЦИЮ)
         await bot.send_message(
             message.chat.id,
             f"🎉 **Оплата успешно произведена, добро пожаловать в клуб «Твоя Математика»!**\n\n"
             f"Ваша подписка активна до **{expire_date}**.\n"
             f"Для проверки статуса используйте команду `/status`.\n\n"
+            f"{referral_message}"
+            f"**🤝 ПРИГЛАШАЙТЕ ДРУЗЕЙ И ПОЛУЧАЙТЕ ДОСТУП!**\n"
+            f"За каждого друга, который купит подписку и зайдет в канал, вы получите **{REFERRAL_BONUS_DAYS} дней** доступа в подарок. Используйте `/ref` для получения ссылки.\n\n"
             f"Вот ваша **одноразовая** ссылка для входа: {invite.invite_link}\n\n"
             f"Если есть вопросы — пишите в поддержку **{SUPPORT_CONTACT}**.",
             parse_mode="Markdown"
         )
-        await state.finish() 
-
+        
     except Exception as e:
-        logger.error(f"КРИТИЧЕСКАЯ ОШИБКА при обработке успешной оплаты для {user_id}: {e}")
+        logger.error(f"КРИТИЧЕСКАЯ ОШИБКА при выдаче ссылки для {user_id}: {e}")
         await bot.send_message(user_id, f"⚠️ **Критическая ошибка!** Оплата прошла, но бот не смог выдать ссылку. Пожалуйста, обратитесь в поддержку {SUPPORT_CONTACT}.", parse_mode="Markdown")
-
-# --- ОБРАБОТЧИК АВТОМАТИЧЕСКОГО ПРОДЛЕНИЯ ---
-@dp.message_handler(content_types=ContentType.SUCCESSFUL_PAYMENT)
-async def auto_renewal_payment(message: Message, state: FSMContext):
     
+    await state.finish()
+
+
+# --- КОМАНДА /REF ---
+
+@dp.message_handler(Command('ref'))
+async def cmd_ref(message: Message):
     user_id = message.from_user.id
-    username = message.from_user.username or 'N/A'
     
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT email FROM subscriptions WHERE user_id = ?", (user_id,))
-    result = cursor.fetchone()
-    conn.close()
-    
-    user_email = result[0] if result else 'Email not found'
+    if not get_subscription_status(user_id).startswith("Активна"):
+        await message.answer("⚠️ Вы не можете участвовать в реферальной программе, пока у вас нет активной подписки. Нажмите `/start` для оформления доступа.")
+        return
 
-    expire_date = add_subscription(user_id, username, user_email, days=30, is_renewal=True) 
+    # Формат ссылки: t.me/BOT_USERNAME?start=ref_USER_ID
+    referral_link = f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
     
-    await send_notification(
-        bot, user_id, 
-        f"✅ **Ваша подписка на Твоя Математика успешно продлена!**\n"
-        f"Новая дата истечения: **{expire_date}**.\n"
-        f"Статус всегда можно проверить командой `/status`."
+    response = (
+        "👥 **ПРИГЛАШАЙТЕ ДРУЗЕЙ И ПОЛУЧАЙТЕ ДОСТУП!**\n\n"
+        f"За каждого друга, который оформит подписку по вашей ссылке, вы получите **{REFERRAL_BONUS_DAYS} дней** бесплатного продления!\n\n"
+        "🔗 **Ваша персональная реферальная ссылка:**\n"
+        f"`{referral_link}`\n\n"
+        "*(Скопируйте и отправьте другу. Бонус будет начислен автоматически после его первой оплаты.)*"
     )
+    
+    await message.answer(response, parse_mode="Markdown")
 
-# --- НОВАЯ КОМАНДА /STATUS ---
+# --- КОМАНДА /STATUS (БЕЗ ССЫЛКИ) ---
 
 @dp.message_handler(Command('status'))
 async def cmd_status(message: Message):
     user_id = message.from_user.id
-    
-    # Получаем статус и дату истечения
     status_text = get_subscription_status(user_id)
     
     if status_text == "Нет подписки":
@@ -416,19 +510,6 @@ async def cmd_status(message: Message):
     else: # Активна до [дата]
         expire_date_str = status_text.split()[-1]
         
-        # Генерация новой одноразовой ссылки на случай, если старая была утеряна
-        try:
-            invite = await bot.create_chat_invite_link(
-                chat_id=CHANNEL_ID,
-                member_limit=1,
-                name=f"Статус: {message.from_user.full_name}",
-                expire_date=datetime.datetime.now() + datetime.timedelta(minutes=5) # ссылка действует 5 минут
-            )
-            invite_link = invite.invite_link
-        except Exception as e:
-             logger.error(f"Ошибка при создании ссылки для статуса {user_id}: {e}")
-             invite_link = "*(Не удалось создать ссылку. Обратитесь в поддержку.)*"
-
         response = (
             "✅ **Ваша подписка на Твоя Математика активна!**\n\n"
             f"Срок действия: **до {expire_date_str}**.\n\n"
@@ -595,5 +676,3 @@ async def cmd_remove(message: Message):
 if __name__ == '__main__':
     init_db()
     executor.start_polling(dp, on_startup=on_startup, skip_updates=True)
-
-

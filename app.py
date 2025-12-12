@@ -299,7 +299,7 @@ async def process_promo_code(message: Message, state: FSMContext):
     if promo_code == PROMO_CODE:
         final_price = PROMO_PRICE
         await state.update_data(payment_price=final_price, promo_applied=True)
-        await message.answer(f"✅ Промокод **{PROMO_CODE}** активирован! Стоимость подписки на первый месяц составит **{final_price / 100:.0f} рублей**.")
+        await message.answer(f"✅ Промокод **{PROMO_CODE}** активирован! Стоимость подписки на первый месяц составит {final_price / 100:.0f} рублей.")
         logger.info(f"Пользователь {message.from_user.id} применил промокод '{PROMO_CODE}'. Цена: {final_price / 100} руб.")
     else:
         final_price = BASE_PRICE
@@ -676,3 +676,4 @@ async def cmd_remove(message: Message):
 if __name__ == '__main__':
     init_db()
     executor.start_polling(dp, on_startup=on_startup, skip_updates=True)
+
